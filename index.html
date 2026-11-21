@@ -26,6 +26,12 @@
             border: 1px solid rgba(255, 255, 255, 0.25);
         }
 
+        .console-card {
+            background: #0b1220;
+            border: 1px solid rgba(56, 189, 248, 0.22);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        }
+
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 10px; }
@@ -100,7 +106,7 @@
     <main id="screenContainer" class="w-full max-w-md mx-auto flex-1 overflow-y-auto p-3 pb-24 space-y-3 hidden">
     </main>
 
-    <!-- Bottom Navigation (Custom Range Removed) -->
+    <!-- Bottom Navigation -->
     <nav id="bottomNav" class="fixed bottom-0 left-0 right-0 bg-[#090d1c]/95 backdrop-blur-lg border-t border-slate-800/80 p-2.5 shadow-2xl z-40 hidden">
         <div class="w-full max-w-md mx-auto grid grid-cols-3 gap-2">
             <button onclick="renderActiveNumbersView()" class="py-2.5 px-1 c-rose active:scale-95 transition-all rounded-xl text-[10px] font-extrabold text-white flex flex-col items-center justify-center space-y-1">
@@ -137,24 +143,30 @@
     </script>
 
     <script>
-        const BOT_TOKEN = "8605052510:AAFgmeUM8a3qV0yTrqU1EvSdd9fbWd4w9sc";
+        const BOT_TOKEN = "9110101653:AAEyXfXSrXYLJpCX2IF3UCvs6LRenfcN6GA";
         const FIREBASE_DB_URL = "https://otp-oanel-2-default-rtdb.firebaseio.com";
         const ADMIN_CHAT_ID = "6140196943";
+        const LOCAL_SESSION_KEY = "ebh_browser_session_v1";
 
-        // EBH Virtual Number Panel API
         const EBH_API_KEY = "sl_live_d22875e4c583fb66bbee58250d46e5a8e52fc1a38ddac922";
         const EBH_API_BASE = "https://slvirtualnumber.com/api/v1/developer";
         const EBH_RENT_API = `${EBH_API_BASE}/rent`;
+        const EBH_LIVE_CONSOLE_API = `${EBH_API_BASE}/live-console`;
         const EBH_OTP_MONITOR_API = `${EBH_API_BASE}/otp-monitor`;
         const EBH_COUNTRIES_API = `${EBH_API_BASE}/available-countries`;
         const EBH_SERVICES_API = `${EBH_API_BASE}/available-services`;
 
-        const NUMBER_VALIDITY_MS = 25 * 60 * 1000;
+        const NUMBER_VALIDITY_MS = 25 * 60 * 1000; // 25 minutes
 
         let currentUser = null;
         let generatedLoginOtp = null;
         let pendingChatId = null;
         let verifiedUserData = null;
+        let liveConsoleFilter = "ALL";
+        let liveConsolePaused = false;
+        let isLiveConsoleActive = false;
+        let lastLiveConsoleHits = [];
+        let lastLiveConsoleSignature = "";
 
         let userCloudData = {
             profile: { name: "EBH User", username: "", photo: "", joinedAt: "" },
@@ -178,148 +190,192 @@
         let pendingWithdrawDetails = null;
         let cachedAllUsers = {};
 
-        // ==================== ALL WORLD COUNTRIES (2-LETTER ISO -> FLAG & FULL NAME) ====================
+        function saveLocalBrowserSession(userObj) {
+            try {
+                if (!userObj || userObj.isMiniApp) return;
+                localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify({
+                    id: String(userObj.id),
+                    name: userObj.name || `EBH User (${userObj.id})`,
+                    username: userObj.username || `@EBH_${userObj.id}`,
+                    photo: userObj.photo || "",
+                    savedAt: Date.now()
+                }));
+            } catch (e) {}
+        }
+
+        function loadLocalBrowserSession() {
+            try {
+                const raw = localStorage.getItem(LOCAL_SESSION_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.id) return parsed;
+            } catch (e) {}
+            return null;
+        }
+
+        function clearLocalBrowserSession() {
+            try {
+                localStorage.removeItem(LOCAL_SESSION_KEY);
+            } catch (e) {}
+        }
+
         const WORLD_COUNTRIES = {
-            "AF": { flag: "🇦🇫", name: "Afghanistan" }, "AX": { flag: "🇦🇽", name: "Aland Islands" },
-            "AL": { flag: "🇦🇱", name: "Albania" }, "DZ": { flag: "🇩🇿", name: "Algeria" },
-            "AS": { flag: "🇦🇸", name: "American Samoa" }, "AD": { flag: "🇦🇩", name: "Andorra" },
-            "AO": { flag: "🇦🇴", name: "Angola" }, "AI": { flag: "🇦🇮", name: "Anguilla" },
-            "AQ": { flag: "🇦🇶", name: "Antarctica" }, "AG": { flag: "🇦🇬", name: "Antigua and Barbuda" },
-            "AR": { flag: "🇦🇷", name: "Argentina" }, "AM": { flag: "🇦🇲", name: "Armenia" },
-            "AW": { flag: "🇦🇼", name: "Aruba" }, "AU": { flag: "🇦🇺", name: "Australia" },
+            "AF": { flag: "🇦🇫", name: "Afghanistan" }, "AL": { flag: "🇦🇱", name: "Albania" },
+            "DZ": { flag: "🇩🇿", name: "Algeria" }, "AR": { flag: "🇦🇷", name: "Argentina" },
+            "AM": { flag: "🇦🇲", name: "Armenia" }, "AU": { flag: "🇦🇺", name: "Australia" },
             "AT": { flag: "🇦🇹", name: "Austria" }, "AZ": { flag: "🇦🇿", name: "Azerbaijan" },
-            "BS": { flag: "🇧🇸", name: "Bahamas" }, "BH": { flag: "🇧🇭", name: "Bahrain" },
-            "BD": { flag: "🇧🇩", name: "Bangladesh" }, "BB": { flag: "🇧🇧", name: "Barbados" },
+            "BH": { flag: "🇧🇭", name: "Bahrain" }, "BD": { flag: "🇧🇩", name: "Bangladesh" },
             "BY": { flag: "🇧🇾", name: "Belarus" }, "BE": { flag: "🇧🇪", name: "Belgium" },
-            "BZ": { flag: "🇧🇿", name: "Belize" }, "BJ": { flag: "🇧🇯", name: "Benin" },
-            "BM": { flag: "🇧🇲", name: "Bermuda" }, "BT": { flag: "🇧🇹", name: "Bhutan" },
-            "BO": { flag: "🇧🇴", name: "Bolivia" }, "BA": { flag: "🇧🇦", name: "Bosnia and Herzegovina" },
-            "BW": { flag: "🇧🇼", name: "Botswana" }, "BV": { flag: "🇧🇻", name: "Bouvet Island" },
-            "BR": { flag: "🇧🇷", name: "Brazil" }, "IO": { flag: "🇮🇴", name: "British Indian Ocean Territory" },
-            "BN": { flag: "🇧🇳", name: "Brunei Darussalam" }, "BG": { flag: "🇧🇬", name: "Bulgaria" },
-            "BF": { flag: "🇧🇫", name: "Burkina Faso" }, "BI": { flag: "🇧🇮", name: "Burundi" },
+            "BR": { flag: "🇧🇷", name: "Brazil" }, "BG": { flag: "🇧🇬", name: "Bulgaria" },
             "KH": { flag: "🇰🇭", name: "Cambodia" }, "CM": { flag: "🇨🇲", name: "Cameroon" },
-            "CA": { flag: "🇨🇦", name: "Canada" }, "CV": { flag: "🇨🇻", name: "Cape Verde" },
-            "KY": { flag: "🇰🇾", name: "Cayman Islands" }, "CF": { flag: "🇨🇫", name: "Central African Republic" },
-            "TD": { flag: "🇹🇩", name: "Chad" }, "CL": { flag: "🇨🇱", name: "Chile" },
-            "CN": { flag: "🇨🇳", name: "China" }, "CX": { flag: "🇨🇽", name: "Christmas Island" },
-            "CC": { flag: "🇨🇨", name: "Cocos (Keeling) Islands" }, "CO": { flag: "🇨🇴", name: "Colombia" },
-            "KM": { flag: "🇰🇲", name: "Comoros" }, "CG": { flag: "🇨🇬", name: "Congo" },
-            "CD": { flag: "🇨🇩", name: "Congo, Democratic Republic" }, "CK": { flag: "🇨🇰", name: "Cook Islands" },
-            "CR": { flag: "🇨🇷", name: "Costa Rica" }, "CI": { flag: "🇨🇮", name: "Cote d'Ivoire" },
-            "HR": { flag: "🇭🇷", name: "Croatia" }, "CU": { flag: "🇨🇺", name: "Cuba" },
-            "CW": { flag: "🇨🇼", name: "Curacao" }, "CY": { flag: "🇨🇾", name: "Cyprus" },
+            "CA": { flag: "🇨🇦", name: "Canada" }, "CL": { flag: "🇨🇱", name: "Chile" },
+            "CN": { flag: "🇨🇳", name: "China" }, "CO": { flag: "🇨🇴", name: "Colombia" },
+            "HR": { flag: "🇭🇷", name: "Croatia" }, "CY": { flag: "🇨🇾", name: "Cyprus" },
             "CZ": { flag: "🇨🇿", name: "Czech Republic" }, "DK": { flag: "🇩🇰", name: "Denmark" },
-            "DJ": { flag: "🇩🇯", name: "Djibouti" }, "DM": { flag: "🇩🇲", name: "Dominica" },
-            "DO": { flag: "🇩🇴", name: "Dominican Republic" }, "EC": { flag: "🇪🇨", name: "Ecuador" },
-            "EG": { flag: "🇪🇬", name: "Egypt" }, "SV": { flag: "🇸🇻", name: "El Salvador" },
-            "GQ": { flag: "🇬🇶", name: "Equatorial Guinea" }, "ER": { flag: "🇪🇷", name: "Eritrea" },
-            "EE": { flag: "🇪🇪", name: "Estonia" }, "ET": { flag: "🇪🇹", name: "Ethiopia" },
-            "FK": { flag: "🇫🇰", name: "Falkland Islands" }, "FO": { flag: "🇫🇴", name: "Faroe Islands" },
-            "FJ": { flag: "🇫🇯", name: "Fiji" }, "FI": { flag: "🇫🇮", name: "Finland" },
-            "FR": { flag: "🇫🇷", name: "France" }, "GF": { flag: "🇬🇫", name: "French Guiana" },
-            "PF": { flag: "🇵🇫", name: "French Polynesia" }, "TF": { flag: "🇹🇫", name: "French Southern Territories" },
-            "GA": { flag: "🇬🇦", name: "Gabon" }, "GM": { flag: "🇬🇲", name: "Gambia" },
-            "GE": { flag: "🇬🇪", name: "Georgia" }, "DE": { flag: "🇩🇪", name: "Germany" },
-            "GH": { flag: "🇬🇭", name: "Ghana" }, "GI": { flag: "🇬🇮", name: "Gibraltar" },
-            "GR": { flag: "🇬🇷", name: "Greece" }, "GL": { flag: "🇬🇱", name: "Greenland" },
-            "GD": { flag: "🇬🇩", name: "Grenada" }, "GP": { flag: "🇬🇵", name: "Guadeloupe" },
-            "GU": { flag: "🇬🇺", name: "Guam" }, "GT": { flag: "🇬🇹", name: "Guatemala" },
-            "GG": { flag: "🇬🇬", name: "Guernsey" }, "GN": { flag: "🇬🇳", name: "Guinea" },
-            "GW": { flag: "🇬🇼", name: "Guinea-Bissau" }, "GY": { flag: "🇬🇾", name: "Guyana" },
-            "HT": { flag: "🇭🇹", name: "Haiti" }, "HM": { flag: "🇭🇲", name: "Heard Island & Mcdonald Islands" },
-            "VA": { flag: "🇻🇦", name: "Holy See (Vatican City State)" }, "HN": { flag: "🇭🇳", name: "Honduras" },
+            "EG": { flag: "🇪🇬", name: "Egypt" }, "EE": { flag: "🇪🇪", name: "Estonia" },
+            "ET": { flag: "🇪🇹", name: "Ethiopia" }, "FI": { flag: "🇫🇮", name: "Finland" },
+            "FR": { flag: "🇫🇷", name: "France" }, "GE": { flag: "🇬🇪", name: "Georgia" },
+            "DE": { flag: "🇩🇪", name: "Germany" }, "GH": { flag: "🇬🇭", name: "Ghana" },
+            "GR": { flag: "🇬🇷", name: "Greece" }, "HT": { flag: "🇭🇹", name: "Haiti" },
             "HK": { flag: "🇭🇰", name: "Hong Kong" }, "HU": { flag: "🇭🇺", name: "Hungary" },
-            "IS": { flag: "🇮🇸", name: "Iceland" }, "IN": { flag: "🇮🇳", name: "India" },
-            "ID": { flag: "🇮🇩", name: "Indonesia" }, "IR": { flag: "🇮🇷", name: "Iran" },
-            "IQ": { flag: "🇮🇶", name: "Iraq" }, "IE": { flag: "🇮🇪", name: "Ireland" },
-            "IM": { flag: "🇮🇲", name: "Isle of Man" }, "IL": { flag: "🇮🇱", name: "Israel" },
-            "IT": { flag: "🇮🇹", name: "Italy" }, "JM": { flag: "🇯🇲", name: "Jamaica" },
-            "JP": { flag: "🇯🇵", name: "Japan" }, "JE": { flag: "🇯🇪", name: "Jersey" },
+            "IN": { flag: "🇮🇳", name: "India" }, "ID": { flag: "🇮🇩", name: "Indonesia" },
+            "IR": { flag: "🇮🇷", name: "Iran" }, "IQ": { flag: "🇮🇶", name: "Iraq" },
+            "IE": { flag: "🇮🇪", name: "Ireland" }, "IL": { flag: "🇮🇱", name: "Israel" },
+            "IT": { flag: "🇮🇹", name: "Italy" }, "JP": { flag: "🇯🇵", name: "Japan" },
             "JO": { flag: "🇯🇴", name: "Jordan" }, "KZ": { flag: "🇰🇿", name: "Kazakhstan" },
-            "KE": { flag: "🇰🇪", name: "Kenya" }, "KI": { flag: "🇰🇮", name: "Kiribati" },
-            "KP": { flag: "🇰🇵", name: "North Korea" }, "KR": { flag: "🇰🇷", name: "South Korea" },
-            "KW": { flag: "🇰🇼", name: "Kuwait" }, "KG": { flag: "🇰🇬", name: "Kyrgyzstan" },
-            "LA": { flag: "🇱🇦", name: "Lao People's Democratic Republic" }, "LV": { flag: "🇱🇻", name: "Latvia" },
-            "LB": { flag: "🇱🇧", name: "Lebanon" }, "LS": { flag: "🇱🇸", name: "Lesotho" },
-            "LR": { flag: "🇱🇷", name: "Liberia" }, "LY": { flag: "🇱🇾", name: "Libya" },
-            "LI": { flag: "🇱🇮", name: "Liechtenstein" }, "LT": { flag: "🇱🇹", name: "Lithuania" },
-            "LU": { flag: "🇱🇺", name: "Luxembourg" }, "MO": { flag: "🇲🇴", name: "Macao" },
-            "MK": { flag: "🇲🇰", name: "North Macedonia" }, "MG": { flag: "🇲🇬", name: "Madagascar" },
-            "MW": { flag: "🇲🇼", name: "Malawi" }, "MY": { flag: "🇲🇾", name: "Malaysia" },
-            "MV": { flag: "🇲🇻", name: "Maldives" }, "ML": { flag: "🇲🇱", name: "Mali" },
-            "MT": { flag: "🇲🇹", name: "Malta" }, "MH": { flag: "🇲🇭", name: "Marshall Islands" },
-            "MQ": { flag: "🇲🇶", name: "Martinique" }, "MR": { flag: "🇲🇷", name: "Mauritania" },
-            "MU": { flag: "🇲🇺", name: "Mauritius" }, "YT": { flag: "🇾🇹", name: "Mayotte" },
-            "MX": { flag: "🇲🇽", name: "Mexico" }, "FM": { flag: "🇫🇲", name: "Micronesia" },
-            "MD": { flag: "🇲🇩", name: "Moldova" }, "MC": { flag: "🇲🇨", name: "Monaco" },
-            "MN": { flag: "🇲🇳", name: "Mongolia" }, "ME": { flag: "🇲🇪", name: "Montenegro" },
-            "MS": { flag: "🇲🇸", name: "Montserrat" }, "MA": { flag: "🇲🇦", name: "Morocco" },
+            "KE": { flag: "🇰🇪", name: "Kenya" }, "KW": { flag: "🇰🇼", name: "Kuwait" },
+            "KG": { flag: "🇰🇬", name: "Kyrgyzstan" }, "LV": { flag: "🇱🇻", name: "Latvia" },
+            "LB": { flag: "🇱🇧", name: "Lebanon" }, "LY": { flag: "🇱🇾", name: "Libya" },
+            "LT": { flag: "🇱🇹", name: "Lithuania" }, "LU": { flag: "🇱🇺", name: "Luxembourg" },
+            "MY": { flag: "🇲🇾", name: "Malaysia" }, "MX": { flag: "🇲🇽", name: "Mexico" },
+            "MD": { flag: "🇲🇩", name: "Moldova" }, "MA": { flag: "🇲🇦", name: "Morocco" },
             "MZ": { flag: "🇲🇿", name: "Mozambique" }, "MM": { flag: "🇲🇲", name: "Myanmar" },
-            "NA": { flag: "🇳🇦", name: "Namibia" }, "NR": { flag: "🇳🇷", name: "Nauru" },
             "NP": { flag: "🇳🇵", name: "Nepal" }, "NL": { flag: "🇳🇱", name: "Netherlands" },
-            "NC": { flag: "🇳🇨", name: "New Caledonia" }, "NZ": { flag: "🇳🇿", name: "New Zealand" },
-            "NI": { flag: "🇳🇮", name: "Nicaragua" }, "NE": { flag: "🇳🇪", name: "Niger" },
-            "NG": { flag: "🇳🇬", name: "Nigeria" }, "NU": { flag: "🇳🇺", name: "Niue" },
-            "NF": { flag: "🇳🇫", name: "Norfolk Island" }, "MP": { flag: "🇲🇵", name: "Northern Mariana Islands" },
+            "NZ": { flag: "🇳🇿", name: "New Zealand" }, "NG": { flag: "🇳🇬", name: "Nigeria" },
             "NO": { flag: "🇳🇴", name: "Norway" }, "OM": { flag: "🇴🇲", name: "Oman" },
-            "PK": { flag: "🇵🇰", name: "Pakistan" }, "PW": { flag: "🇵🇼", name: "Palau" },
-            "PS": { flag: "🇵🇸", name: "Palestine" }, "PA": { flag: "🇵🇦", name: "Panama" },
-            "PG": { flag: "🇵🇬", name: "Papua New Guinea" }, "PY": { flag: "🇵🇾", name: "Paraguay" },
+            "PK": { flag: "🇵🇰", name: "Pakistan" }, "PA": { flag: "🇵🇦", name: "Panama" },
             "PE": { flag: "🇵🇪", name: "Peru" }, "PH": { flag: "🇵🇭", name: "Philippines" },
-            "PN": { flag: "🇵🇳", name: "Pitcairn" }, "PL": { flag: "🇵🇱", name: "Poland" },
-            "PT": { flag: "🇵🇹", name: "Portugal" }, "PR": { flag: "🇵🇷", name: "Puerto Rico" },
-            "QA": { flag: "🇶🇦", name: "Qatar" }, "RE": { flag: "🇷🇪", name: "Reunion" },
-            "RO": { flag: "🇷🇴", name: "Romania" }, "RU": { flag: "🇷🇺", name: "Russia" },
-            "RW": { flag: "🇷🇼", name: "Rwanda" }, "BL": { flag: "🇧🇱", name: "Saint Barthelemy" },
-            "SH": { flag: "🇸🇭", name: "Saint Helena" }, "KN": { flag: "🇰🇳", name: "Saint Kitts and Nevis" },
-            "LC": { flag: "🇱🇨", name: "Saint Lucia" }, "MF": { flag: "🇲🇫", name: "Saint Martin" },
-            "PM": { flag: "🇵🇲", name: "Saint Pierre and Miquelon" }, "VC": { flag: "🇻🇨", name: "Saint Vincent and the Grenadines" },
-            "WS": { flag: "🇼🇸", name: "Samoa" }, "SM": { flag: "🇸🇲", name: "San Marino" },
-            "ST": { flag: "🇸🇹", name: "Sao Tome and Principe" }, "SA": { flag: "🇸🇦", name: "Saudi Arabia" },
+            "PL": { flag: "🇵🇱", name: "Poland" }, "PT": { flag: "🇵🇹", name: "Portugal" },
+            "QA": { flag: "🇶🇦", name: "Qatar" }, "RO": { flag: "🇷🇴", name: "Romania" },
+            "RU": { flag: "🇷🇺", name: "Russia" }, "SA": { flag: "🇸🇦", name: "Saudi Arabia" },
             "SN": { flag: "🇸🇳", name: "Senegal" }, "RS": { flag: "🇷🇸", name: "Serbia" },
-            "SC": { flag: "🇸🇨", name: "Seychelles" }, "SL": { flag: "🇸🇱", name: "Sierra Leone" },
-            "SG": { flag: "🇸🇬", name: "Singapore" }, "SX": { flag: "🇸🇽", name: "Sint Maarten" },
-            "SK": { flag: "🇸🇰", name: "Slovakia" }, "SI": { flag: "🇸🇮", name: "Slovenia" },
-            "SB": { flag: "🇸🇧", name: "Solomon Islands" }, "SO": { flag: "🇸🇴", name: "Somalia" },
-            "ZA": { flag: "🇿🇦", name: "South Africa" }, "GS": { flag: "🇬🇸", name: "South Georgia" },
-            "SS": { flag: "🇸🇸", name: "South Sudan" }, "ES": { flag: "🇪🇸", name: "Spain" },
-            "LK": { flag: "🇱🇰", name: "Sri Lanka" }, "SD": { flag: "🇸🇩", name: "Sudan" },
-            "SR": { flag: "🇸🇷", name: "Suriname" }, "SJ": { flag: "🇸🇯", name: "Svalbard and Jan Mayen" },
-            "SZ": { flag: "🇸🇿", name: "Eswatini" }, "SE": { flag: "🇸🇪", name: "Sweden" },
-            "CH": { flag: "🇨🇭", name: "Switzerland" }, "SY": { flag: "🇸🇾", name: "Syria" },
-            "TW": { flag: "🇹🇼", name: "Taiwan" }, "TJ": { flag: "🇹🇯", name: "Tajikistan" },
-            "TZ": { flag: "🇹🇿", name: "Tanzania" }, "TH": { flag: "🇹🇭", name: "Thailand" },
-            "TL": { flag: "🇹🇱", name: "Timor-Leste" }, "TG": { flag: "🇹🇬", name: "Togo" },
-            "TK": { flag: "🇹🇰", name: "Tokelau" }, "TO": { flag: "🇹🇴", name: "Tonga" },
-            "TT": { flag: "🇹🇹", name: "Trinidad and Tobago" }, "TN": { flag: "🇹🇳", name: "Tunisia" },
+            "SG": { flag: "🇸🇬", name: "Singapore" }, "SK": { flag: "🇸🇰", name: "Slovakia" },
+            "SI": { flag: "🇸🇮", name: "Slovenia" }, "ZA": { flag: "🇿🇦", name: "South Africa" },
+            "KR": { flag: "🇰🇷", name: "South Korea" }, "ES": { flag: "🇪🇸", name: "Spain" },
+            "LK": { flag: "🇱🇰", name: "Sri Lanka" }, "SE": { flag: "🇸🇪", name: "Sweden" },
+            "CH": { flag: "🇨🇭", name: "Switzerland" }, "TW": { flag: "🇹🇼", name: "Taiwan" },
+            "TJ": { flag: "🇹🇯", name: "Tajikistan" }, "TZ": { flag: "🇹🇿", name: "Tanzania" },
+            "TH": { flag: "🇹🇭", name: "Thailand" }, "TN": { flag: "🇹🇳", name: "Tunisia" },
             "TR": { flag: "🇹🇷", name: "Turkey" }, "TM": { flag: "🇹🇲", name: "Turkmenistan" },
-            "TC": { flag: "🇹🇨", name: "Turks and Caicos Islands" }, "TV": { flag: "🇹🇻", name: "Tuvalu" },
             "UG": { flag: "🇺🇬", name: "Uganda" }, "UA": { flag: "🇺🇦", name: "Ukraine" },
             "AE": { flag: "🇦🇪", name: "United Arab Emirates" }, "GB": { flag: "🇬🇧", name: "United Kingdom" },
-            "US": { flag: "🇺🇸", name: "United States" }, "UM": { flag: "🇺🇲", name: "United States Minor Outlying Islands" },
-            "UY": { flag: "🇺🇾", name: "Uruguay" }, "UZ": { flag: "🇺🇿", name: "Uzbekistan" },
-            "VU": { flag: "🇻🇺", name: "Vanuatu" }, "VE": { flag: "🇻🇪", name: "Venezuela" },
-            "VN": { flag: "🇻🇳", name: "Vietnam" }, "VG": { flag: "🇻🇬", name: "Virgin Islands, British" },
-            "VI": { flag: "🇻🇮", name: "Virgin Islands, U.S." }, "WF": { flag: "🇼🇫", name: "Wallis and Futuna" },
-            "EH": { flag: "🇪🇭", name: "Western Sahara" }, "YE": { flag: "🇾🇪", name: "Yemen" },
-            "ZM": { flag: "🇿🇲", name: "Zambia" }, "ZW": { flag: "🇿🇼", name: "Zimbabwe" },
-            "XK": { flag: "🇽🇰", name: "Kosovo" }
+            "US": { flag: "🇺🇸", name: "United States" }, "UZ": { flag: "🇺🇿", name: "Uzbekistan" },
+            "VE": { flag: "🇻🇪", name: "Venezuela" }, "VN": { flag: "🇻🇳", name: "Vietnam" },
+            "YE": { flag: "🇾🇪", name: "Yemen" }, "ZM": { flag: "🇿🇲", name: "Zambia" },
+            "ZW": { flag: "🇿🇼", name: "Zimbabwe" }
         };
+
+        const DIAL_TO_ISO = {
+            "39": "IT", "855": "KH", "20": "EG", "509": "HT", "251": "ET", "880": "BD",
+            "1": "US", "7": "RU", "44": "GB", "49": "DE", "33": "FR",
+            "34": "ES", "48": "PL", "62": "ID", "63": "PH", "234": "NG",
+            "91": "IN", "92": "PK", "90": "TR", "84": "VN", "60": "MY",
+            "66": "TH", "81": "JP", "82": "KR", "86": "CN", "55": "BR",
+            "52": "MX", "54": "AR", "57": "CO", "51": "PE", "27": "ZA",
+            "212": "MA", "213": "DZ", "216": "TN", "966": "SA", "971": "AE"
+        };
+
+        function normalizeDigits(num) {
+            return String(num || "").replace(/\D/g, "");
+        }
+
+        function stripTrailingDots(str) {
+            return String(str || "").replace(/(\s*(\.{2,}|…)+\s*)+$/g, "").replace(/(\.{2,}|…)/g, "").trim();
+        }
 
         function isoToFlagEmoji(code) {
             const c = String(code || "").trim().toUpperCase();
             if (c.length === 2 && /^[A-Z]{2}$/.test(c)) {
                 return String.fromCodePoint(127397 + c.charCodeAt(0), 127397 + c.charCodeAt(1));
             }
-            return "🌍";
+            return "";
+        }
+
+        function findAnyStringByKeys(obj, keyList, depth = 0) {
+            if (!obj || typeof obj !== "object" || depth > 4) return "";
+            for (const k of keyList) {
+                if (typeof obj[k] === "string" && obj[k].trim() !== "") {
+                    return obj[k].trim();
+                }
+                if (typeof obj[k] === "number" && !Number.isNaN(obj[k])) {
+                    return String(obj[k]);
+                }
+            }
+            for (const val of Object.values(obj)) {
+                if (val && typeof val === "object" && !Array.isArray(val)) {
+                    const found = findAnyStringByKeys(val, keyList, depth + 1);
+                    if (found) return found;
+                }
+            }
+            return "";
+        }
+
+        function getDirectPhone(hit) {
+            const keys = [
+                "phoneNumber", "phone_number", "maskedPhone", "masked_phone",
+                "number", "phone", "msisdn", "recipient", "dest", "destination",
+                "to", "target", "line"
+            ];
+            let raw = findAnyStringByKeys(hit, keys);
+            if (!raw) {
+                const fullText = getDirectMessage(hit);
+                const m = fullText.match(/(\+?\d[\d\s•*xX-]{5,18}\d)/);
+                if (m) raw = m[1].trim();
+            }
+            return raw ? raw.trim() : "";
+        }
+
+        function getDirectMessage(hit) {
+            if (!hit || typeof hit !== "object") return stripTrailingDots(hit);
+            const keys = [
+                "fullSms", "full_sms", "message", "sms", "text", "body",
+                "content", "rawSnippet", "raw_snippet", "otpText", "otp_text", "msg"
+            ];
+            const found = findAnyStringByKeys(hit, keys);
+            return stripTrailingDots(found);
+        }
+
+        function getDirectCountry(hit, phoneStr = "") {
+            const keys = ["countryCode", "country_code", "iso", "isoCode", "iso_code", "country", "countryName", "country_name", "region"];
+            const rawVal = findAnyStringByKeys(hit, keys);
+            if (rawVal) {
+                const upper = rawVal.toUpperCase().trim();
+                if (WORLD_COUNTRIES[upper]) return upper;
+                for (const [k, v] of Object.entries(WORLD_COUNTRIES)) {
+                    if (v.name.toUpperCase() === upper) return k;
+                }
+                const twoLetter = upper.match(/\b([A-Z]{2})\b/);
+                if (twoLetter && WORLD_COUNTRIES[twoLetter[1]]) return twoLetter[1];
+                if (/^[A-Z]{2,3}$/.test(upper)) return upper;
+            }
+
+            const digits = normalizeDigits(phoneStr);
+            if (digits) {
+                for (const len of [3, 2, 1]) {
+                    const prefix = digits.slice(0, len);
+                    if (DIAL_TO_ISO[prefix]) return DIAL_TO_ISO[prefix];
+                }
+            }
+            return "";
+        }
+
+        function getDirectService(hit) {
+            const keys = ["service", "serviceName", "service_name", "senderCli", "sender_cli", "sender", "app", "platform", "provider", "cli"];
+            return findAnyStringByKeys(hit, keys).toUpperCase();
         }
 
         function getCountryInfo(code) {
-            let upper = String(code || "").toUpperCase().trim();
-            if (upper.length === 3 && upper.endsWith("A") && WORLD_COUNTRIES[upper.slice(0, 2)]) {
-                upper = upper.slice(0, 2);
-            }
+            const upper = String(code || "").toUpperCase().trim();
             if (WORLD_COUNTRIES[upper]) {
                 return { flag: WORLD_COUNTRIES[upper].flag, name: WORLD_COUNTRIES[upper].name, short: upper };
             }
@@ -328,7 +384,20 @@
                     return { flag: v.flag, name: v.name, short: k };
                 }
             }
-            return { flag: isoToFlagEmoji(upper), name: upper || "Global", short: upper || "GL" };
+            const fl = isoToFlagEmoji(upper);
+            return { flag: fl || "", name: upper || "", short: upper || "" };
+        }
+
+        function formatConsoleTimeAgo(hit) {
+            const rawTime = hit.timeAgo || hit.time_ago || hit.time || hit.timestamp || hit.createdAt || hit.created_at;
+            if (!rawTime) return "just now";
+            if (typeof rawTime === "string" && isNaN(Number(rawTime))) return rawTime;
+            const ts = Number(rawTime) < 1e12 ? Number(rawTime) * 1000 : Number(rawTime);
+            const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+            if (diffSec < 15) return "just now";
+            if (diffSec < 60) return `${diffSec}s ago`;
+            if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+            return `${Math.floor(diffSec / 3600)}h ago`;
         }
 
         const SERVICE_ICONS = {
@@ -359,17 +428,13 @@
             };
         }
 
-        function normalizeDigits(num) {
-            return String(num || "").replace(/\D/g, "");
-        }
-
         function extractOtpFromText(text) {
             if (!text) return null;
             const match = String(text).match(/\b\d{4,8}\b/);
             return match ? match[0] : null;
         }
 
-        function extractListFlexible(rawJson, keys = ["data", "services", "countries", "hits", "messages", "otps", "logs", "items", "results"]) {
+        function extractListFlexible(rawJson, keys = ["data", "services", "countries", "hits", "messages", "otps", "logs", "items", "results", "console", "events", "stream", "records", "list"]) {
             if (!rawJson) return [];
             if (Array.isArray(rawJson)) return rawJson;
             if (typeof rawJson === "object") {
@@ -392,14 +457,32 @@
             return rawNum ? ("+" + String(rawNum).replace(/^\+/, "").trim()) : "";
         }
 
+        async function fetchLiveConsoleHits(limit = 50) {
+            const endpoints = [
+                `${EBH_LIVE_CONSOLE_API}?limit=${limit}&_t=${Date.now()}`,
+                `${EBH_OTP_MONITOR_API}?limit=${limit}&_t=${Date.now()}`
+            ];
+            for (const url of endpoints) {
+                try {
+                    const res = await fetch(url, { cache: "no-store", headers: ebhHeaders() });
+                    if (res.ok) {
+                        const json = await res.json();
+                        const items = extractListFlexible(json);
+                        if (items.length > 0) return items;
+                    }
+                } catch (e) {}
+            }
+            return [];
+        }
+
         async function fetchGlobalSettings() {
             try {
-                const res = await fetch(`${FIREBASE_DB_URL}/settings.json`);
+                const res = await fetch(`${FIREBASE_DB_URL}/settings.json?t=${Date.now()}`, { cache: "no-store" });
                 const data = await res.json();
                 if (data && typeof data === "object") {
                     globalSettings = { ...globalSettings, ...data };
                 }
-                const wRes = await fetch(`${FIREBASE_DB_URL}/withdraws.json`);
+                const wRes = await fetch(`${FIREBASE_DB_URL}/withdraws.json?t=${Date.now()}`, { cache: "no-store" });
                 const wData = await wRes.json();
                 if (wData && typeof wData === "object") {
                     pendingWithdraws = wData;
@@ -463,10 +546,33 @@
                     isMiniApp: true
                 };
                 await initializeCloudSession();
-            } else {
-                document.getElementById('loginScreen').classList.remove('hidden');
+                return;
             }
+
+            const savedSession = loadLocalBrowserSession();
+            if (savedSession && savedSession.id) {
+                currentUser = {
+                    id: String(savedSession.id),
+                    name: savedSession.name || `EBH User (${savedSession.id})`,
+                    username: savedSession.username || `@EBH_${savedSession.id}`,
+                    photo: savedSession.photo || `https://ui-avatars.com/api/?name=${savedSession.id}&background=10b981&color=fff`,
+                    isMiniApp: false
+                };
+                await initializeCloudSession();
+                return;
+            }
+
+            document.getElementById('loginScreen').classList.remove('hidden');
         };
+
+        function filterValidActiveNumbers(list) {
+            const now = Date.now();
+            return (Array.isArray(list) ? list : []).filter(item => {
+                if (!item || !item.number) return false;
+                const exp = Number(item.expiresAt || ((item.createdAt || item.id || now) + NUMBER_VALIDITY_MS));
+                return exp > now;
+            });
+        }
 
         async function initializeCloudSession() {
             let fetchedPhoto = currentUser.photo;
@@ -490,7 +596,7 @@
                         totalSuccessOtps: Number(s.totalSuccessOtps ?? existingCloud.successful_otps ?? 0),
                         balance: Number(s.balance ?? existingCloud.balance ?? 0.00)
                     },
-                    activeNumbers: Array.isArray(existingCloud.activeNumbers) ? existingCloud.activeNumbers : [],
+                    activeNumbers: filterValidActiveNumbers(existingCloud.activeNumbers),
                     successOtps: Array.isArray(existingCloud.successOtps) ? existingCloud.successOtps : [],
                     processed_numbers: Array.isArray(existingCloud.processed_numbers) ? existingCloud.processed_numbers : []
                 };
@@ -498,19 +604,9 @@
                 currentUser.name = userCloudData.profile.name;
                 currentUser.username = userCloudData.profile.username;
 
-                const now = Date.now();
-                userCloudData.activeNumbers = userCloudData.activeNumbers.filter(item => {
-                    const exp = item.expiresAt || ((item.createdAt || item.id || now) + NUMBER_VALIDITY_MS);
-                    return exp > now;
-                });
-
                 await syncUserToFirebase();
+                saveLocalBrowserSession(currentUser);
             } else {
-                if (!currentUser.isMiniApp) {
-                    document.getElementById('loginScreen').classList.remove('hidden');
-                    showToast("⚠️ আগে টেলিগ্রাম বট বা মিনি অ্যাপ ওপেন করুন!");
-                    return;
-                }
                 userCloudData = {
                     profile: { name: currentUser.name, username: currentUser.username || "@EBHUser", photo: fetchedPhoto, joinedAt: new Date().toLocaleDateString() },
                     stats: { totalNumbersTaken: 0, totalSuccessOtps: 0, balance: 0.00 },
@@ -525,7 +621,7 @@
 
         async function fetchUserFromFirebase(userId) {
             try {
-                const res = await fetch(`${FIREBASE_DB_URL}/users/${userId}.json`);
+                const res = await fetch(`${FIREBASE_DB_URL}/users/${userId}.json?t=${Date.now()}`, { cache: "no-store" });
                 return await res.json() || null;
             } catch (e) { return null; }
         }
@@ -533,6 +629,7 @@
         async function syncUserToFirebase() {
             if (!currentUser || !currentUser.id) return;
             try {
+                userCloudData.activeNumbers = filterValidActiveNumbers(userCloudData.activeNumbers);
                 const payload = {
                     profile: userCloudData.profile,
                     stats: userCloudData.stats,
@@ -562,7 +659,8 @@
                     service: service,
                     country: countryCode,
                     raw_num: rawNum,
-                    time: Math.floor(Date.now() / 1000)
+                    time: Math.floor(Date.now() / 1000),
+                    expiresAt: Date.now() + NUMBER_VALIDITY_MS
                 };
                 await fetch(`${FIREBASE_DB_URL}/active_assignments/${normNum}.json`, {
                     method: "PUT",
@@ -608,11 +706,15 @@
             if (!chatIdInput) { showToast("⚠️ সঠিক Telegram Chat ID দিন!"); return; }
 
             showToast("🔍 Realtime DB চেক করা হচ্ছে...");
-            const existingData = await fetchUserFromFirebase(chatIdInput);
+            let existingData = await fetchUserFromFirebase(chatIdInput);
 
             if (!existingData) {
-                alert("❌ এক্সেস ডিনায়ার্ড!\n\nআগে টেলিগ্রাম বট বা মিনি অ্যাপ থেকে /start করে প্রোফাইল তৈরি করুন।");
-                return;
+                existingData = {
+                    profile: { name: `EBH User (${chatIdInput})`, username: `@EBH_${chatIdInput}`, photo: "", joinedAt: new Date().toLocaleDateString() },
+                    stats: { totalNumbersTaken: 0, totalSuccessOtps: 0, balance: 0.00 },
+                    activeNumbers: [],
+                    successOtps: []
+                };
             }
 
             verifiedUserData = existingData;
@@ -645,6 +747,7 @@
                     isMiniApp: false
                 };
 
+                saveLocalBrowserSession(currentUser);
                 await initializeCloudSession();
                 showToast("✅ সফলভাবে লগইন হয়েছে!");
             } else {
@@ -658,7 +761,10 @@
         }
 
         function logoutUser() {
-            if (confirm("লগআউট করতে চান?")) { location.reload(); }
+            if (confirm("লগআউট করতে চান?")) {
+                clearLocalBrowserSession();
+                location.reload();
+            }
         }
 
         function showToast(msg) {
@@ -674,17 +780,19 @@
         }
 
         async function renderUserProfileView() {
+            isLiveConsoleActive = false;
+            await fetchGlobalSettings();
             const latestCloud = await fetchUserFromFirebase(currentUser.id);
             if (latestCloud) {
                 const p = latestCloud.profile || {};
                 const s = latestCloud.stats || {};
                 userCloudData.profile.name = p.name || latestCloud.name || currentUser.name;
                 userCloudData.profile.username = p.username || latestCloud.username || currentUser.username;
-                userCloudData.stats.totalNumbersTaken = Number(s.totalNumbersTaken ?? latestCloud.total_numbers ?? userCloudData.stats.totalNumbersTaken);
-                userCloudData.stats.totalSuccessOtps = Number(s.totalSuccessOtps ?? latestCloud.successful_otps ?? userCloudData.stats.totalSuccessOtps);
-                userCloudData.stats.balance = Number(s.balance ?? latestCloud.balance ?? userCloudData.stats.balance);
+                userCloudData.stats.totalNumbersTaken = Math.max(Number(userCloudData.stats.totalNumbersTaken || 0), Number(s.totalNumbersTaken ?? latestCloud.total_numbers ?? 0));
+                userCloudData.stats.totalSuccessOtps = Math.max(Number(userCloudData.stats.totalSuccessOtps || 0), Number(s.totalSuccessOtps ?? latestCloud.successful_otps ?? 0));
+                userCloudData.stats.balance = Math.max(Number(userCloudData.stats.balance || 0), Number(s.balance ?? latestCloud.balance ?? 0));
                 if (Array.isArray(latestCloud.successOtps)) userCloudData.successOtps = latestCloud.successOtps;
-                if (Array.isArray(latestCloud.activeNumbers)) userCloudData.activeNumbers = latestCloud.activeNumbers;
+                if (Array.isArray(latestCloud.activeNumbers)) userCloudData.activeNumbers = filterValidActiveNumbers(latestCloud.activeNumbers);
                 currentUser.name = userCloudData.profile.name;
                 document.getElementById('headerNameText').innerText = currentUser.name;
                 updateOtpBadge();
@@ -719,9 +827,9 @@
                     </div>
 
                     <div class="c-green rounded-2xl p-4 text-center space-y-1 shadow-lg">
-                        <div class="text-[10px] font-bold text-emerald-100 uppercase">Available Balance</div>
+                        <div class="text-[10px] font-bold text-emerald-100 uppercase">Current Balance</div>
                         <div class="text-3xl font-black text-white font-mono">৳${(s.balance || 0).toFixed(2)}</div>
-                        <div class="text-[10px] text-emerald-200">Rate: ৳${globalSettings.otpRate} / Successful OTP</div>
+                        <div class="text-[10px] text-emerald-200">OTP Rate: ৳${Number(globalSettings.otpRate || 5).toFixed(2)} / Successful OTP</div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
@@ -749,6 +857,7 @@
         }
 
         function renderWithdrawModal() {
+            isLiveConsoleActive = false;
             const container = document.getElementById('screenContainer');
             const balance = userCloudData.stats.balance || 0;
 
@@ -760,7 +869,7 @@
                     </div>
 
                     <div class="bg-slate-900 p-3.5 rounded-2xl text-center border border-slate-800">
-                        <span class="text-xs text-slate-400">Available Balance: </span>
+                        <span class="text-xs text-slate-400">Current Balance: </span>
                         <span class="text-emerald-400 font-black font-mono">৳${balance.toFixed(2)}</span>
                         <p class="text-[10px] text-amber-400 mt-1">Min Withdraw: ৳${globalSettings.minWithdraw}</p>
                     </div>
@@ -811,6 +920,7 @@
         }
 
         function renderWithdrawVerifyView() {
+            isLiveConsoleActive = false;
             const container = document.getElementById('screenContainer');
             container.innerHTML = `
                 <div class="glass-panel rounded-3xl p-6 space-y-4 shadow-2xl border border-emerald-500/40 text-center">
@@ -848,6 +958,7 @@
         }
 
         async function renderAdminPanelView() {
+            isLiveConsoleActive = false;
             const container = document.getElementById('screenContainer');
             container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center text-xs text-slate-300"><i class="fa-solid fa-spinner fa-spin text-xl text-rose-400 mr-2"></i> EBH অ্যাডমিন ডেটা লোড হচ্ছে...</div>`;
 
@@ -1030,7 +1141,7 @@
             const uNums = Number(s.totalNumbersTaken ?? uData.total_numbers ?? 0);
             const uOtps = Number(s.totalSuccessOtps ?? uData.successful_otps ?? 0);
             const uBal = Number(s.balance ?? uData.balance ?? 0);
-            const activeCount = (uData.activeNumbers || []).length;
+            const activeCount = filterValidActiveNumbers(uData.activeNumbers).length;
             const savedOtpCount = (uData.successOtps || []).length;
 
             const container = document.getElementById('screenContainer');
@@ -1079,7 +1190,7 @@
 
         async function saveAdminSettings() {
             globalSettings.otpRate = parseFloat(document.getElementById('admRate').value) || 5.00;
-            globalSettings.numberLimit = parseInt(document.getElementById('admLimit').value) || 3;
+            globalSettings.numberLimit = Math.max(1, parseInt(document.getElementById('admLimit').value) || 3);
             globalSettings.minWithdraw = parseFloat(document.getElementById('admMinWithdraw').value) || 50.00;
             globalSettings.withdrawMethods = document.getElementById('admMethods').value;
 
@@ -1169,6 +1280,8 @@
         }
 
         async function loadServices() {
+            isLiveConsoleActive = false;
+            await fetchGlobalSettings();
             const container = document.getElementById('screenContainer');
             container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center text-xs text-slate-300"><i class="fa-solid fa-spinner fa-spin text-xl text-sky-400 mr-2"></i> EBH সার্ভিস লোড হচ্ছে...</div>`;
 
@@ -1192,6 +1305,8 @@
         }
 
         async function loadCountriesForService(encodedServiceName) {
+            isLiveConsoleActive = false;
+            await fetchGlobalSettings();
             const serviceName = decodeURIComponent(encodedServiceName);
             lastSelectedService = serviceName;
 
@@ -1221,6 +1336,8 @@
         }
 
         async function buyNumbers(encodedServiceTitle, encodedCountryCode) {
+            isLiveConsoleActive = false;
+            await fetchGlobalSettings();
             const serviceTitle = decodeURIComponent(encodedServiceTitle);
             const countryCode = decodeURIComponent(encodedCountryCode);
 
@@ -1228,7 +1345,7 @@
             lastSelectedCountryCode = countryCode;
 
             const container = document.getElementById('screenContainer');
-            container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center text-xs text-slate-300"><i class="fa-solid fa-spinner fa-spin text-xl text-emerald-400 mr-2"></i> EBH নাম্বার জেনারেট হচ্ছে...</div>`;
+            container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center text-xs text-slate-300"><i class="fa-solid fa-spinner fa-spin text-xl text-emerald-400 mr-2"></i> EBH নতুন নাম্বার জেনারেট হচ্ছে...</div>`;
 
             let limit = parseInt(globalSettings.numberLimit || 3);
             if (limit < 1) limit = 3;
@@ -1265,6 +1382,7 @@
             }
 
             if (newFetchedNumbers.length > 0) {
+                // Replace old numbers with new numbers completely
                 userCloudData.activeNumbers = newFetchedNumbers;
                 userCloudData.stats.totalNumbersTaken = Number(userCloudData.stats.totalNumbersTaken || 0) + newFetchedNumbers.length;
                 await syncUserToFirebase();
@@ -1282,24 +1400,41 @@
             return `${mins}:${secs}`;
         }
 
-        function renderActiveNumbersView() {
+        async function renderActiveNumbersView() {
+            isLiveConsoleActive = false;
             const container = document.getElementById('screenContainer');
+
+            if (currentUser && currentUser.id) {
+                const latestCloud = await fetchUserFromFirebase(currentUser.id);
+                if (latestCloud) {
+                    const s = latestCloud.stats || {};
+                    userCloudData.stats.totalNumbersTaken = Math.max(Number(userCloudData.stats.totalNumbersTaken || 0), Number(s.totalNumbersTaken ?? latestCloud.total_numbers ?? 0));
+                    userCloudData.stats.totalSuccessOtps = Math.max(Number(userCloudData.stats.totalSuccessOtps || 0), Number(s.totalSuccessOtps ?? latestCloud.successful_otps ?? 0));
+                    userCloudData.stats.balance = Math.max(Number(userCloudData.stats.balance || 0), Number(s.balance ?? latestCloud.balance ?? 0));
+                    if (Array.isArray(latestCloud.successOtps)) userCloudData.successOtps = latestCloud.successOtps;
+                    if (Array.isArray(latestCloud.activeNumbers)) {
+                        userCloudData.activeNumbers = filterValidActiveNumbers(latestCloud.activeNumbers);
+                    }
+                    updateOtpBadge();
+                }
+            }
+
             const now = Date.now();
-            const myNums = (userCloudData.activeNumbers || []).filter(item => {
-                const exp = item.expiresAt || ((item.createdAt || item.id || now) + NUMBER_VALIDITY_MS);
-                return exp > now;
-            });
+            const myNums = filterValidActiveNumbers(userCloudData.activeNumbers);
+            userCloudData.activeNumbers = myNums;
 
             if (myNums.length === 0) {
-                container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center space-y-3 shadow-xl"><div class="w-12 h-12 c-blue text-white rounded-2xl mx-auto flex items-center justify-center text-xl shadow-lg"><i class="fa-solid fa-satellite-dish"></i></div><h1 class="text-base font-extrabold text-white">EBH SMS CLOUD PANEL</h1><p class="text-xs text-slate-400">GET NUMBER এ ক্লিক করে সার্ভিস ও কান্ট্রি বেছে নাম্বার নিন।</p></div>`;
+                container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center space-y-3 shadow-xl"><div class="w-12 h-12 c-blue text-white rounded-2xl mx-auto flex items-center justify-center text-xl shadow-lg"><i class="fa-solid fa-satellite-dish"></i></div><h1 class="text-base font-extrabold text-white">EBH SMS CLOUD PANEL</h1><p class="text-xs text-slate-400">GET NUMBER এ ক্লিক করে সার্ভিস ও কান্ট্রি বেছে নাম্বার নিন। নাম্বার ২৫ মিনিট পর্যন্ত এখানে থাকবে।</p></div>`;
                 return;
             }
 
-            let html = `<div class="space-y-3 pb-6"><div class="flex justify-between items-center px-1"><h3 class="text-xs font-extrabold text-emerald-400 uppercase">📦 EBH ACTIVE NUMBERS</h3><button onclick="clearHistory()" class="text-[10px] c-rose px-2.5 py-1 rounded-lg text-white font-bold">Clear</button></div>`;
+            let html = `<div class="space-y-3 pb-6"><div class="flex justify-between items-center px-1"><h3 class="text-xs font-extrabold text-emerald-400 uppercase">📦 EBH ACTIVE NUMBERS (25 MIN)</h3><button onclick="clearHistory()" class="text-[10px] c-rose px-2.5 py-1 rounded-lg text-white font-bold">Clear</button></div>`;
             myNums.forEach(item => {
                 let cInfo = getCountryInfo(item.countryCode);
-                const exp = item.expiresAt || ((item.createdAt || item.id || now) + NUMBER_VALIDITY_MS);
+                const exp = Number(item.expiresAt || ((item.createdAt || item.id || now) + NUMBER_VALIDITY_MS));
                 const remStr = formatRemainingTime(exp - now);
+                const rateVal = Number(globalSettings.otpRate || 5).toFixed(2);
+                const balVal = Number(userCloudData.stats.balance || 0).toFixed(2);
 
                 html += `
                     <div class="glass-panel rounded-2xl p-4 space-y-3 shadow-xl border-l-4 ${item.otp ? 'border-emerald-400' : 'border-sky-400'}">
@@ -1307,7 +1442,7 @@
                             <span class="font-extrabold text-white">${cInfo.flag} ${cInfo.name} (${cInfo.short})</span>
                             <div class="flex items-center space-x-1.5">
                                 <span data-expires="${exp}" class="num-timer-badge text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded font-mono font-bold"><i class="fa-regular fa-clock mr-1"></i>${remStr}</span>
-                                <span class="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-mono font-bold">+৳${globalSettings.otpRate}</span>
+                                <span class="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-mono font-bold">+৳${rateVal}</span>
                                 <span class="c-purple px-2 py-0.5 rounded-full text-[10px] text-white font-bold truncate max-w-[90px]">${item.service}</span>
                             </div>
                         </div>
@@ -1315,16 +1450,16 @@
                             📞 ${item.number}
                         </div>
                         ${item.otp ? `
-                            <div onclick="copyText('${item.otp}', 'OTP Code')" class="cursor-pointer active:scale-95 transition-all c-green p-3 rounded-xl text-center shadow-lg">
+                            <div onclick="copyText('${item.otp}', 'OTP Code')" class="cursor-pointer active:scale-95 transition-all c-green p-3 rounded-xl text-center shadow-lg space-y-1">
                                 <div class="text-[10px] text-emerald-100 uppercase font-bold flex justify-between px-2">
-                                    <span>Tap to Copy OTP</span>
-                                    <span class="text-yellow-300 font-mono">+৳${globalSettings.otpRate} Added</span>
+                                    <span>Rate: +৳${rateVal}</span>
+                                    <span class="text-yellow-300 font-mono">Balance: ৳${balVal}</span>
                                 </div>
-                                <div class="text-2xl font-mono font-black text-white tracking-widest mt-0.5">🔑 ${item.otp}</div>
+                                <div class="text-2xl font-mono font-black text-white tracking-widest">🔑 ${item.otp}</div>
                             </div>
                         ` : `
                             <div class="bg-slate-900/90 border border-slate-800 p-2.5 rounded-xl text-center text-xs font-bold text-amber-400 animate-pulse">
-                                ⌛ Waiting for incoming OTP... (Sent to Telegram Inbox too)
+                                ⌛ Waiting for incoming OTP... (Rate: +৳${rateVal} | Bal: ৳${balVal})
                             </div>
                         `}
                     </div>
@@ -1338,9 +1473,23 @@
             container.innerHTML = html;
         }
 
-        function renderMyOtpView() {
+        async function renderMyOtpView() {
+            isLiveConsoleActive = false;
+            await fetchGlobalSettings();
+            if (currentUser && currentUser.id) {
+                const latestCloud = await fetchUserFromFirebase(currentUser.id);
+                if (latestCloud) {
+                    if (Array.isArray(latestCloud.successOtps)) userCloudData.successOtps = latestCloud.successOtps;
+                    const s = latestCloud.stats || {};
+                    userCloudData.stats.balance = Math.max(Number(userCloudData.stats.balance || 0), Number(s.balance ?? latestCloud.balance ?? 0));
+                    updateOtpBadge();
+                }
+            }
+
             const container = document.getElementById('screenContainer');
             const myOtps = userCloudData.successOtps || [];
+            const rateVal = Number(globalSettings.otpRate || 5).toFixed(2);
+            const balVal = Number(userCloudData.stats.balance || 0).toFixed(2);
 
             if (myOtps.length === 0) {
                 container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center space-y-3 shadow-xl border border-amber-500/30"><div class="w-12 h-12 c-amber text-white rounded-2xl mx-auto flex items-center justify-center text-xl shadow-lg"><i class="fa-solid fa-key"></i></div><h1 class="text-base font-extrabold text-white">EBH MY OTP INBOX</h1><p class="text-xs text-slate-400">কোনো সফল ওটিপি নেই।</p></div>`;
@@ -1351,15 +1500,54 @@
                 <div class="space-y-3 pb-6">
                     <div class="flex justify-between items-center px-1">
                         <h3 class="text-xs font-extrabold text-amber-400 uppercase"><i class="fa-solid fa-key mr-1"></i> SUCCESSFUL OTPs (${myOtps.length})</h3>
-                        <button onclick="renderActiveNumbersView()" class="text-[10px] c-blue px-2.5 py-1 rounded-lg text-white font-bold">Back</button>
+                        <div class="flex items-center space-x-1.5">
+                            <button onclick="clearOtpHistory()" class="text-[10px] c-rose px-2.5 py-1 rounded-lg text-white font-bold">Clear</button>
+                            <button onclick="renderActiveNumbersView()" class="text-[10px] c-blue px-2.5 py-1 rounded-lg text-white font-bold">Back</button>
+                        </div>
                     </div>
             `;
             myOtps.slice().reverse().forEach((item, index) => {
                 let serialNo = myOtps.length - index;
-                html += `<div class="glass-panel rounded-2xl p-4 space-y-3 shadow-xl border-l-4 border-amber-400"><div class="flex justify-between items-center text-xs"><span class="font-black text-amber-300 bg-amber-950/60 px-2.5 py-0.5 rounded-full">#${serialNo} &bull; ${item.service || 'SMS'}</span><span class="text-[10px] text-slate-400 font-mono">${item.time || ''}</span></div><div onclick="copyText('${item.number}', 'Number')" class="cursor-pointer active:scale-95 transition-all text-base font-mono font-extrabold text-white bg-slate-900 p-3 rounded-xl text-center border border-slate-800">📞 ${item.number}</div><div onclick="copyText('${item.otp}', 'OTP Code')" class="cursor-pointer active:scale-95 transition-all c-green p-3 rounded-xl text-center shadow-lg"><div class="text-2xl font-mono font-black text-white tracking-widest">🔑 ${item.otp}</div></div></div>`;
+                const cInfo = getCountryInfo(item.countryCode || getDirectCountry(item, item.number));
+                const srvName = (item.service || "SMS").toString();
+                const itemRate = Number(item.rate ?? rateVal).toFixed(2);
+
+                html += `
+                    <div class="glass-panel rounded-2xl p-4 space-y-3 shadow-xl border-l-4 border-amber-400">
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="font-black text-amber-300 bg-amber-950/60 px-2.5 py-0.5 rounded-full">#${serialNo} &bull; ${cInfo.flag} ${srvName}</span>
+                            <span class="text-[10px] text-slate-400 font-mono">${item.time || ''}</span>
+                        </div>
+                        <div onclick="copyText('${item.number}', 'Number')" class="cursor-pointer active:scale-95 transition-all bg-slate-900 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
+                            <span class="text-base font-mono font-extrabold text-white truncate">
+                                <span class="mr-1.5">${cInfo.flag}</span>📞 ${item.number}
+                            </span>
+                            <span class="c-blue text-white text-[10px] font-extrabold px-2.5 py-1 rounded-lg flex-shrink-0 ml-2 uppercase">
+                                ${srvName}
+                            </span>
+                        </div>
+                        <div onclick="copyText('${item.otp}', 'OTP Code')" class="cursor-pointer active:scale-95 transition-all c-green p-3 rounded-xl text-center shadow-lg space-y-1">
+                            <div class="text-[10px] text-emerald-100 uppercase font-bold flex justify-between px-2">
+                                <span>Rate: +৳${itemRate}</span>
+                                <span class="text-yellow-300 font-mono">Balance: ৳${balVal}</span>
+                            </div>
+                            <div class="text-2xl font-mono font-black text-white tracking-widest">🔑 ${item.otp}</div>
+                        </div>
+                    </div>
+                `;
             });
             html += `</div>`;
             container.innerHTML = html;
+        }
+
+        async function clearOtpHistory() {
+            if (confirm("আপনি কি সত্যিই MY OTP হিস্ট্রি ক্লিয়ার করতে চান?")) {
+                userCloudData.successOtps = [];
+                await syncUserToFirebase();
+                updateOtpBadge();
+                showToast("✅ MY OTP হিস্ট্রি ক্লিয়ার করা হয়েছে!");
+                renderMyOtpView();
+            }
         }
 
         async function clearHistory() {
@@ -1373,6 +1561,19 @@
         async function checkNumberExpirationAndTimers() {
             if (!currentUser) return;
             const now = Date.now();
+            const beforeLen = (userCloudData.activeNumbers || []).length;
+            const validList = filterValidActiveNumbers(userCloudData.activeNumbers);
+
+            if (validList.length !== beforeLen) {
+                userCloudData.activeNumbers = validList;
+                await syncUserToFirebase();
+                const container = document.getElementById('screenContainer');
+                if (container && container.innerHTML.includes("EBH ACTIVE NUMBERS")) {
+                    renderActiveNumbersView();
+                    return;
+                }
+            }
+
             document.querySelectorAll('.num-timer-badge').forEach(badge => {
                 const exp = parseInt(badge.getAttribute('data-expires')) || 0;
                 const rem = exp - now;
@@ -1383,26 +1584,48 @@
         async function pollOtps() {
             if (!currentUser) return;
             try {
+                await fetchGlobalSettings();
                 const latestCloud = await fetchUserFromFirebase(currentUser.id);
                 if (latestCloud) {
                     const s = latestCloud.stats || {};
-                    userCloudData.stats.totalSuccessOtps = Number(s.totalSuccessOtps ?? latestCloud.successful_otps ?? userCloudData.stats.totalSuccessOtps);
-                    userCloudData.stats.balance = Number(s.balance ?? latestCloud.balance ?? userCloudData.stats.balance);
+                    userCloudData.stats.totalNumbersTaken = Math.max(Number(userCloudData.stats.totalNumbersTaken || 0), Number(s.totalNumbersTaken ?? latestCloud.total_numbers ?? 0));
+                    userCloudData.stats.totalSuccessOtps = Math.max(Number(userCloudData.stats.totalSuccessOtps || 0), Number(s.totalSuccessOtps ?? latestCloud.successful_otps ?? 0));
+                    userCloudData.stats.balance = Math.max(Number(userCloudData.stats.balance || 0), Number(s.balance ?? latestCloud.balance ?? 0));
                     if (Array.isArray(latestCloud.successOtps)) userCloudData.successOtps = latestCloud.successOtps;
-                    if (Array.isArray(latestCloud.activeNumbers)) userCloudData.activeNumbers = latestCloud.activeNumbers;
+                    if (Array.isArray(latestCloud.activeNumbers)) {
+                        userCloudData.activeNumbers = filterValidActiveNumbers(latestCloud.activeNumbers);
+                    }
                     updateOtpBadge();
                 }
 
-                const activeNums = userCloudData.activeNumbers || [];
+                const allSms = await fetchLiveConsoleHits(50);
+
+                if (allSms.length > 0) {
+                    const sig = JSON.stringify(allSms.map(h => [
+                        getDirectPhone(h),
+                        getDirectMessage(h),
+                        getDirectService(h),
+                        getDirectCountry(h, getDirectPhone(h))
+                    ]));
+
+                    if (sig !== lastLiveConsoleSignature) {
+                        lastLiveConsoleSignature = sig;
+                        lastLiveConsoleHits = allSms;
+                        if (isLiveConsoleActive && !liveConsolePaused) {
+                            renderLiveConsoleView(lastLiveConsoleHits);
+                        }
+                    }
+                }
+
+                const activeNums = filterValidActiveNumbers(userCloudData.activeNumbers);
                 if (activeNums.length === 0) return;
 
-                const res = await fetch(`${EBH_OTP_MONITOR_API}?limit=50`, { headers: ebhHeaders() });
-                const allSms = extractListFlexible(await res.json());
-
                 let updated = false;
+                const rateAmount = Number(globalSettings.otpRate || 5);
+
                 for (const sms of allSms) {
-                    const apiNum = normalizeDigits(sms.number || sms.phoneNumber || sms.phone || sms.to || "");
-                    const msg = sms.message || sms.rawSnippet || sms.text || sms.sms || "";
+                    const apiNum = normalizeDigits(getDirectPhone(sms));
+                    const msg = getDirectMessage(sms);
                     const code = String(sms.otp || sms.otpCode || sms.code || extractOtpFromText(msg) || "").trim();
 
                     if (code && apiNum) {
@@ -1412,18 +1635,23 @@
                                 act.otp = code;
                                 updated = true;
 
+                                const resolvedService = getDirectService(sms) || act.service || "SMS";
+                                const resolvedCountry = act.countryCode || getDirectCountry(sms, act.number);
+
                                 const alreadyExists = (userCloudData.successOtps || []).some(h => h.number === act.number && String(h.otp) === code);
                                 if (!alreadyExists) {
+                                    userCloudData.stats.totalSuccessOtps = Number(userCloudData.stats.totalSuccessOtps || 0) + 1;
+                                    userCloudData.stats.balance = Number((Number(userCloudData.stats.balance || 0) + rateAmount).toFixed(2));
                                     userCloudData.successOtps.push({
                                         id: 'otp_' + Date.now(),
                                         timestamp: Date.now(),
                                         number: act.number,
-                                        service: act.service,
+                                        countryCode: resolvedCountry,
+                                        service: resolvedService,
                                         otp: code,
+                                        rate: rateAmount,
                                         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                                     });
-                                    userCloudData.stats.totalSuccessOtps = Number(userCloudData.stats.totalSuccessOtps || 0) + 1;
-                                    userCloudData.stats.balance = Number(userCloudData.stats.balance || 0) + Number(globalSettings.otpRate || 5);
                                 }
                             }
                         }
@@ -1431,6 +1659,7 @@
                 }
 
                 if (updated) {
+                    userCloudData.activeNumbers = activeNums;
                     await syncUserToFirebase();
                     updateOtpBadge();
                     const container = document.getElementById('screenContainer');
@@ -1441,41 +1670,132 @@
             } catch (e) {}
         }
 
-        async function loadLiveTraffic() {
+        function setLiveConsoleFilter(srv) {
+            liveConsoleFilter = srv;
+            renderLiveConsoleView(lastLiveConsoleHits);
+        }
+
+        function toggleLiveConsolePause() {
+            liveConsolePaused = !liveConsolePaused;
+            if (!liveConsolePaused) {
+                loadLiveTraffic();
+            } else {
+                renderLiveConsoleView(lastLiveConsoleHits);
+            }
+        }
+
+        function renderLiveConsoleView(hits) {
             const container = document.getElementById('screenContainer');
-            container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center text-xs text-slate-300"><i class="fa-solid fa-spinner fa-spin text-emerald-400 mr-2"></i> EBH লাইভ ট্রাফিক লোড হচ্ছে...</div>`;
+            const filterTabs = ["ALL", "Facebook", "WhatsApp", "Instagram", "Telegram"];
+
+            const filteredHits = (hits || []).filter(hit => {
+                if (liveConsoleFilter === "ALL") return true;
+                const srv = getDirectService(hit).toLowerCase();
+                return srv.includes(liveConsoleFilter.toLowerCase());
+            });
+
+            let cardsHtml = "";
+            if (filteredHits.length === 0) {
+                cardsHtml = `<div class="p-5 console-card rounded-2xl text-center text-xs text-slate-400">কোনো লাইভ মেসেজ পাওয়া যায়নি।</div>`;
+            } else {
+                filteredHits.slice().reverse().forEach(hit => {
+                    const phoneText = getDirectPhone(hit);
+                    const cCode = getDirectCountry(hit, phoneText);
+                    const cInfo = cCode ? getCountryInfo(cCode) : { flag: "", short: "" };
+                    const serviceName = getDirectService(hit);
+                    const timeAgo = formatConsoleTimeAgo(hit);
+                    const fullSms = getDirectMessage(hit);
+
+                    cardsHtml += `
+                        <div class="console-card rounded-2xl p-3.5 space-y-2.5">
+                            <div class="flex items-center space-x-2 flex-wrap gap-y-1">
+                                ${cInfo.short ? `
+                                    <span class="px-2.5 py-1 rounded-lg bg-slate-800/90 border border-slate-700/80 text-xs font-black text-white flex items-center space-x-1">
+                                        <span>${cInfo.flag}</span>
+                                        <span>${cInfo.short}</span>
+                                    </span>
+                                ` : ''}
+                                ${serviceName ? `
+                                    <span class="px-2.5 py-1 rounded-lg bg-blue-950/90 border border-blue-500/30 text-[11px] font-extrabold text-sky-300 flex items-center space-x-1.5">
+                                        <span class="w-2 h-2 rounded-full bg-sky-400 inline-block"></span>
+                                        <span>${serviceName}</span>
+                                    </span>
+                                ` : ''}
+                                <span class="text-xs font-mono font-extrabold text-white tracking-wide">${phoneText}</span>
+                            </div>
+
+                            <div class="flex items-center space-x-2.5">
+                                <button onclick="buyNumbers('${encodeURIComponent(serviceName || 'Facebook')}', '${encodeURIComponent(cInfo.short || 'IT')}')" class="px-3 py-1.5 rounded-lg bg-emerald-950/90 hover:bg-emerald-900 border border-emerald-500/40 text-[11px] font-extrabold text-emerald-300 active:scale-95 transition-all flex items-center space-x-1.5">
+                                    <i class="fa-solid fa-phone text-[10px]"></i>
+                                    <span>GET NUMBER</span>
+                                </button>
+                                <span class="text-[11px] font-mono text-slate-400">${timeAgo}</span>
+                            </div>
+
+                            <div class="bg-[#060b14] border border-slate-800/90 rounded-xl p-3 text-xs text-slate-200 leading-relaxed break-words whitespace-pre-wrap select-all flex items-start space-x-2">
+                                <i class="fa-regular fa-comment-dots text-sky-400 mt-0.5 flex-shrink-0"></i>
+                                <span class="flex-1">${fullSms}</span>
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            const tabsHtml = filterTabs.map(tab => {
+                const active = liveConsoleFilter.toUpperCase() === tab.toUpperCase();
+                return `
+                    <button onclick="setLiveConsoleFilter('${tab}')" class="px-3.5 py-1.5 rounded-full text-xs font-extrabold whitespace-nowrap transition-all ${active ? 'c-green text-white' : 'bg-slate-900 text-slate-300 border border-slate-800 hover:border-slate-600'}">
+                        ${tab}
+                    </button>
+                `;
+            }).join("");
+
+            container.innerHTML = `
+                <div class="glass-panel rounded-3xl p-4 space-y-3 shadow-2xl border border-emerald-500/30 pb-6">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                        <div class="flex items-center space-x-2">
+                            <i class="fa-regular fa-comments text-sky-400 text-sm"></i>
+                            <span class="text-xs font-extrabold text-white uppercase tracking-wide">LIVE OTP</span>
+                            <span class="flex items-center space-x-1 text-[11px] font-bold ${liveConsolePaused ? 'text-amber-400' : 'text-emerald-400'}">
+                                <span class="w-2 h-2 rounded-full ${liveConsolePaused ? 'bg-amber-400' : 'bg-emerald-400 animate-ping'} inline-block"></span>
+                                <span>${liveConsolePaused ? 'paused' : 'streaming'}</span>
+                            </span>
+                        </div>
+
+                        <div class="flex items-center space-x-1.5">
+                            <button onclick="toggleLiveConsolePause()" class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-[10px] font-bold text-slate-200 hover:bg-slate-800">
+                                <i class="fa-solid ${liveConsolePaused ? 'fa-play' : 'fa-pause'} mr-1"></i>${liveConsolePaused ? 'Resume' : 'Pause'}
+                            </button>
+                            <button onclick="loadLiveTraffic()" class="p-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 hover:bg-slate-800" title="Refresh">
+                                <i class="fa-solid fa-rotate-right text-[11px]"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center space-x-2 overflow-x-auto pb-1">
+                        ${tabsHtml}
+                    </div>
+
+                    <div class="space-y-3">
+                        ${cardsHtml}
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadLiveTraffic() {
+            isLiveConsoleActive = true;
+            const container = document.getElementById('screenContainer');
+            if (lastLiveConsoleHits.length === 0) {
+                container.innerHTML = `<div class="glass-panel rounded-2xl p-6 text-center text-xs text-slate-300"><i class="fa-solid fa-spinner fa-spin text-emerald-400 mr-2"></i> EBH লাইভ কনসোল লোড হচ্ছে...</div>`;
+            }
 
             try {
-                const res = await fetch(`${EBH_OTP_MONITOR_API}?limit=30`, { headers: ebhHeaders() });
-                const hits = extractListFlexible(await res.json());
-
-                let html = `<div class="glass-panel rounded-2xl p-4 space-y-2.5 shadow-2xl border border-emerald-500/30 pb-6"><div class="flex justify-between items-center border-b border-slate-800 pb-2"><h3 class="text-xs font-extrabold text-emerald-400 uppercase"><i class="fa-solid fa-satellite-dish mr-1"></i> EBH LIVE TRAFFIC</h3><button onclick="loadLiveTraffic()" class="text-[10px] c-sky px-2 py-0.5 rounded font-bold text-white">Refresh</button></div><div class="space-y-2.5">`;
-
-                if (!hits || hits.length === 0) {
-                    html += `<div class="p-4 bg-slate-900/90 border border-slate-800 rounded-xl text-center text-xs text-slate-400">কোনো লাইভ মেসেজ পাওয়া যায়নি।</div>`;
-                } else {
-                    hits.slice(-25).reverse().forEach(hit => {
-                        const cCode = (hit.countryCode || hit.country_code || hit.country || "ET").toString().toUpperCase();
-                        const cInfo = getCountryInfo(cCode);
-                        const serviceName = (hit.service || "SMS").toString();
-                        const rawMessage = hit.message || hit.rawSnippet || hit.text || hit.sms || JSON.stringify(hit);
-
-                        html += `
-                            <div class="p-3 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2">
-                                <div class="flex justify-between items-center font-bold text-white">
-                                    <span>${cInfo.flag} ${cInfo.name} (${cInfo.short})</span>
-                                    <span class="c-blue text-white font-mono text-[10px] px-2 py-0.5 rounded-full font-extrabold">${serviceName}</span>
-                                </div>
-                                <div class="flex justify-end">
-                                    <button onclick="buyNumbers('${encodeURIComponent(serviceName)}', '${encodeURIComponent(cInfo.short)}')" class="px-2.5 py-1 c-green text-white text-[10px] font-extrabold rounded-lg shadow">Get Number</button>
-                                </div>
-                                <div class="text-[11px] text-emerald-300 font-mono bg-black/50 p-2.5 rounded-lg border border-slate-800 break-words leading-relaxed">${rawMessage}</div>
-                            </div>
-                        `;
-                    });
+                const hits = await fetchLiveConsoleHits(50);
+                if (hits.length > 0) {
+                    lastLiveConsoleHits = hits;
                 }
-                html += `</div></div>`;
-                container.innerHTML = html;
+                renderLiveConsoleView(lastLiveConsoleHits);
             } catch (e) {
                 container.innerHTML = `<div class="glass-panel rounded-2xl p-4 text-center text-xs text-rose-400">লোড করতে সমস্যা হয়েছে!</div>`;
             }
